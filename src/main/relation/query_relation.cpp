@@ -10,6 +10,7 @@
 #include "duckdb/parser/query_node/select_node.hpp"
 #include "duckdb/planner/query_node/bound_select_node.hpp"
 #include "duckdb/parser/common_table_expression_info.hpp"
+#include "duckdb/parser/query_node/cte_node.hpp"
 
 namespace duckdb {
 
@@ -46,6 +47,10 @@ unique_ptr<SelectStatement> QueryRelation::GetSelectStatement() {
 unique_ptr<QueryNode> QueryRelation::GetQueryNode() {
 	auto select = GetSelectStatement();
 	return std::move(select->node);
+}
+
+string QueryRelation::GetQuery() {
+	return query;
 }
 
 unique_ptr<TableRef> QueryRelation::GetTableRef() {

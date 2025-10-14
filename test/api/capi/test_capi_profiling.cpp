@@ -234,3 +234,89 @@ TEST_CASE("Test invalid use of profiling API", "[capi]") {
 	duckdb_destroy_value(&map);
 	tester.Cleanup();
 }
+
+TEST_CASE("Test profiling after throwing an error", "[capi]") {
+	CAPITester tester;
+	auto main_db = TestCreatePath("profiling_error.db");
+	REQUIRE(tester.OpenDatabase(main_db.c_str()));
+
+	auto path = TestCreatePath("profiling_error.db");
+	REQUIRE_NO_FAIL(tester.Query("ATTACH IF NOT EXISTS '" + path + "' (TYPE DUCKDB)"));
+	REQUIRE_NO_FAIL(tester.Query("CREATE TABLE profiling_error.tbl AS SELECT range AS id FROM range(10)"));
+
+	REQUIRE_NO_FAIL(tester.Query("SET enable_profiling = 'no_output'"));
+	REQUIRE_NO_FAIL(tester.Query("SET profiling_mode = 'standard'"));
+
+	CAPIPrepared prepared_q1;
+	CAPIPending pending_q1;
+	REQUIRE(prepared_q1.Prepare(tester, "SELECT * FROM profiling_error.tbl"));
+	REQUIRE(pending_q1.Pending(prepared_q1));
+	auto result = pending_q1.Execute();
+	REQUIRE(result);
+	REQUIRE(!result->HasError());
+
+	auto info = duckdb_get_profiling_info(tester.connection);
+	REQUIRE(info != nullptr);
+
+	CAPIPrepared prepared_q2;
+	REQUIRE(!prepared_q2.Prepare(tester, "SELECT * FROM profiling_error.does_not_exist"));
+	info = duckdb_get_profiling_info(tester.connection);
+	REQUIRE(info == nullptr);
+
+	tester.Cleanup();
+}
+
+TEST_CASE("Test profiling with Extra Info enabled", "[capi]") {
+	CAPITester tester;
+	REQUIRE(tester.OpenDatabase(nullptr));
+
+	REQUIRE_NO_FAIL(tester.Query("PRAGMA enable_profiling = 'no_output'"));
+	duckdb::vector<string> settings = {"EXTRA_INFO"};
+	REQUIRE_NO_FAIL(tester.Query("PRAGMA custom_profiling_settings=" + BuildSettingsString(settings)));
+	REQUIRE_NO_FAIL(tester.Query("SELECT 1"));
+
+	auto info = duckdb_get_profiling_info(tester.connection);
+	REQUIRE(info);
+
+	// Retrieve the child node.
+	auto child_info = duckdb_profiling_info_get_child(info, 0);
+	REQUIRE(duckdb_profiling_info_get_child_count(child_info) != 0);
+
+	auto map = duckdb_profiling_info_get_metrics(child_info);
+	REQUIRE(map);
+	auto count = duckdb_get_map_size(map);
+	REQUIRE(count != 0);
+
+	bool found_extra_info = false;
+	for (idx_t i = 0; i < count; i++) {
+		auto key = duckdb_get_map_key(map, i);
+		REQUIRE(key);
+		auto key_c_str = duckdb_get_varchar(key);
+		auto key_str = duckdb::string(key_c_str);
+
+		auto value = duckdb_get_map_value(map, i);
+		REQUIRE(value);
+		auto value_c_str = duckdb_get_varchar(value);
+		auto value_str = duckdb::string(value_c_str);
+
+		if (key_str == EnumUtil::ToString(MetricsType::EXTRA_INFO)) {
+			REQUIRE(value_str.find("__order_by__"));
+			REQUIRE(value_str.find("ASC"));
+			found_extra_info = true;
+		}
+
+		if (key) {
+			duckdb_destroy_value(&key);
+			duckdb_free(key_c_str);
+		}
+		if (value) {
+			duckdb_destroy_value(&value);
+			duckdb_free(value_c_str);
+		}
+	}
+
+	REQUIRE(found_extra_info);
+
+	duckdb_destroy_value(&map);
+	tester.Cleanup();
+}
